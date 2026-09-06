@@ -49,8 +49,42 @@ result = wm.verify_watermark(w_watermarked, owner_id="OWNER-001")
 ### Running the Demo
 
 ```bash
+# Offline demo (no network, no external model) — prints full report, exit 0
 python3 data_exfil.py
+
+# Tunable experiment
+python3 data_exfil.py --seed 7 --rows 200 --cols 200
+
+# JSON report to reports/ (gitignored)
+python3 data_exfil.py --output reports/ai3-report.json
+
+# Quiet CI mode + JSON
+python3 data_exfil.py --quiet --output reports/ai3-report.json
 ```
+
+### Exit Codes
+
+- `0` — experiment completed cleanly
+- `1` — error (bad arguments / report write failure)
+
+### Live Lab Test Plan
+
+Runs entirely offline — weights, messages, keys, and payloads are generated
+locally; nothing is downloaded and no external ML service is queried.
+
+1. **Demo**: `python3 data_exfil.py` — expect four round-trip blocks (LSB steganography, index steganography, prediction/timing covert channel, payload-in-weights encoder) and a watermark block. Exit `0`.
+2. **Round trips**: every `round_trip_match` must be `True` — the encoded payload is decoded losslessly from the same weight tensor.
+3. **Watermark verification**: `watermark.detected` is `True` for the correct owner and `False` (`wrong_key_detected`) for an impostor.
+4. **JSON report**: `python3 data_exfil.py --output reports/ai3-report.json` — verify all `round_trip_match` fields.
+5. **Unit tests**: `python3 -m unittest discover -s tests -v` — all pass (LSB/index round trips, prediction/timing channels, watermark owner detection, payload round trip, CLI JSON write).
+
+## Metrics
+
+- Real encode/decode code paths exercised offline: `WeightSteganography.embed_lsb/extract_lsb`, `embed_index/extract_index`, `CovertChannel.sender_encode/receiver_decode` and `timing_channel/decode_timing`, `ModelWatermark.embed_watermark/verify_watermark`, `DataEncoder.encode/decode`
+- Every channel reports a `round_trip_match` boolean plus weight-perturbation L2 magnitude
+- Watermark reports `correlation`, `cosine_similarity`, `rmse`, `detected`, and owner fingerprint
+- 10 unit tests; exit-code contract `0` clean / `1` error
+- Zero runtime cloud/network dependencies; offline demo needs only numpy
 
 ## Example Output
 

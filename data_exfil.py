@@ -302,77 +302,164 @@ class DataEncoder:
         return bytes(result)
 
 
-def main():
-    print("=" * 60)
-    print("  AI3 — Data Exfiltration via ML Demo")
-    print("=" * 60)
+def run_experiment(seed: int = 0, weight_rows: int = 100,
+                   weight_cols: int = 100) -> dict:
+    """Run the full exfiltration/watermark experiment, returning results dict."""
+    np.random.seed(seed)
+    weights = np.random.randn(weight_rows, weight_cols).astype(np.float64)
 
-    np.random.seed(0)
-    weights = np.random.randn(100, 100).astype(np.float64)
-
-    print("\n--- LSB Steganography ---")
-    steg = WeightSteganography()
+    steg = WeightSteganography(seed=seed)
     secret = "HIDDEN: Operations room blueprints"
     w_steg = steg.embed_lsb(weights, secret)
     extracted = steg.extract_lsb(w_steg)
-    print(f"  Hidden message:  '{secret}'")
-    print(f"  Extracted:       '{extracted}'")
-    print(f"  Match:           {extracted == secret}")
-    print(f"  Weight diff L2:  {np.sqrt(np.sum((w_steg - weights)**2)):.6f}")
 
-    print("\n--- Index-Based Steganography ---")
     secret_bytes = b"TOP SECRET: 42.3601,-71.0589"
     w_idx = steg.embed_index(weights, secret_bytes)
     extracted_bytes = steg.extract_index(w_idx, len(secret_bytes))
-    print(f"  Hidden:    {secret_bytes}")
-    print(f"  Extracted: {extracted_bytes}")
-    print(f"  Match:     {extracted_bytes == secret_bytes}")
 
-    print("\n--- Prediction API Covert Channel ---")
-    channel = CovertChannel(num_classes=16)
+    channel = CovertChannel(num_classes=16, seed=seed)
     msg = "EXFIL: credentials=abc123"
     encoded = channel.sender_encode(msg)
     decoded = channel.receiver_decode(encoded["predictions"])
-    print(f"  Message:    '{msg}'")
-    print(f"  Decoded:    '{decoded}'")
-    print(f"  Bits:       {encoded['num_bits']}")
-    print(f"  Match:      {decoded == msg}")
-
-    print("\n--- Timing Covert Channel ---")
     timing = channel.timing_channel(msg, base_delay=0.001)
-    timing_decoded = channel.decode_timing(timing["delays"],
-                                           threshold=0.002)
-    print(f"  Message:    '{msg}'")
-    print(f"  Decoded:    '{timing_decoded}'")
-    print(f"  Match:      {timing_decoded == msg}")
+    timing_decoded = channel.decode_timing(timing["delays"], threshold=0.002)
 
-    print("\n--- Model Watermarking ---")
-    wm = ModelWatermark(key="my-secret-key")
+    wm = ModelWatermark(key="my-secret-key", seed=seed)
     w_watermarked = wm.embed_watermark(weights, owner_id="LAB-42")
     result = wm.verify_watermark(w_watermarked, owner_id="LAB-42")
-    fingerprint = wm.extract_fingerprint(w_watermarked)
-    print(f"  Owner:         LAB-42")
-    print(f"  Correlation:   {result['correlation']:.4f}")
-    print(f"  Cosine sim:    {result['cosine_similarity']:.4f}")
-    print(f"  RMSE:          {result['rmse']:.8f}")
-    print(f"  Detected:      {result['detected']}")
-    print(f"  Fingerprint:   {fingerprint}")
-
     wrong_key_wm = wm.verify_watermark(w_watermarked, owner_id="WRONG")
-    print(f"  Wrong key:     detected={wrong_key_wm['detected']}")
+    fingerprint = wm.extract_fingerprint(w_watermarked)
 
-    print("\n--- Data Encoder (Payload in Weights) ---")
     encoder = DataEncoder()
     payload = b"SENSITIVE: model-v3-secret-data"
     w_encoded = encoder.encode(weights, payload)
     decoded_payload = encoder.decode(w_encoded)
-    print(f"  Payload:    {payload}")
-    print(f"  Decoded:    {decoded_payload}")
-    print(f"  Match:      {decoded_payload == payload}")
-    print(f"  Weight L2:  {np.sqrt(np.sum((w_encoded - weights)**2)):.6f}")
 
-    print("\nDone.")
+    def _float(v):
+        if np.isnan(v):
+            return v
+        return float(v)
+
+    return {
+        "weights_shape": list(weights.shape),
+        "lsb_steganography": {
+            "hidden": secret,
+            "extracted": extracted,
+            "round_trip_match": extracted == secret,
+            "weight_l2_delta": _float(np.sqrt(np.sum((w_steg - weights) ** 2))),
+        },
+        "index_steganography": {
+            "hidden": secret_bytes.decode("utf-8"),
+            "extracted": extracted_bytes.decode("utf-8"),
+            "round_trip_match": extracted_bytes == secret_bytes,
+        },
+        "covert_channel": {
+            "message": msg,
+            "decoded": decoded,
+            "num_bits": encoded["num_bits"],
+            "round_trip_match": decoded == msg,
+            "timing_decoded": timing_decoded,
+            "timing_match": timing_decoded == msg,
+        },
+        "watermark": {
+            "owner": "LAB-42",
+            "correlation": _float(result["correlation"]),
+            "cosine_similarity": _float(result["cosine_similarity"]),
+            "rmse": _float(result["rmse"]),
+            "detected": bool(result["detected"]),
+            "wrong_key_detected": bool(wrong_key_wm["detected"]),
+            "fingerprint": fingerprint,
+        },
+        "payload_encoder": {
+            "payload": payload.decode("utf-8"),
+            "decoded": decoded_payload.decode("utf-8"),
+            "round_trip_match": decoded_payload == payload,
+            "weight_l2_delta": _float(np.sqrt(np.sum((w_encoded - weights) ** 2))),
+        },
+    }
+
+
+def format_report(results: dict) -> str:
+    lines = []
+    lines.append("=" * 60)
+    lines.append("  AI3 — Data Exfiltration via ML Demo")
+    lines.append("=" * 60)
+
+    lines.append("\n--- LSB Steganography ---")
+    lsb = results["lsb_steganography"]
+    lines.append(f"  Hidden message:  '{lsb['hidden']}'")
+    lines.append(f"  Extracted:       '{lsb['extracted']}'")
+    lines.append(f"  Match:           {lsb['round_trip_match']}")
+    lines.append(f"  Weight diff L2:  {lsb['weight_l2_delta']:.6f}")
+
+    lines.append("\n--- Index-Based Steganography ---")
+    idx = results["index_steganography"]
+    lines.append(f"  Hidden:    {idx['hidden']}")
+    lines.append(f"  Extracted: {idx['extracted']}")
+    lines.append(f"  Match:     {idx['round_trip_match']}")
+
+    lines.append("\n--- Prediction API Covert Channel ---")
+    cc = results["covert_channel"]
+    lines.append(f"  Message:    '{cc['message']}'")
+    lines.append(f"  Decoded:    '{cc['decoded']}'")
+    lines.append(f"  Bits:       {cc['num_bits']}")
+    lines.append(f"  Match:      {cc['round_trip_match']}")
+    lines.append(f"  Timing:     decoded='{cc['timing_decoded']}' match={cc['timing_match']}")
+
+    lines.append("\n--- Model Watermarking ---")
+    wm = results["watermark"]
+    lines.append(f"  Owner:         {wm['owner']}")
+    lines.append(f"  Correlation:   {wm['correlation']:.4f}")
+    lines.append(f"  Cosine sim:    {wm['cosine_similarity']:.4f}")
+    lines.append(f"  RMSE:          {wm['rmse']:.8f}")
+    lines.append(f"  Detected:      {wm['detected']}")
+    lines.append(f"  Wrong key:     detected={wm['wrong_key_detected']}")
+    lines.append(f"  Fingerprint:   {wm['fingerprint']}")
+
+    lines.append("\n--- Data Encoder (Payload in Weights) ---")
+    pe = results["payload_encoder"]
+    lines.append(f"  Payload:    {pe['payload']}")
+    lines.append(f"  Decoded:    {pe['decoded']}")
+    lines.append(f"  Match:      {pe['round_trip_match']}")
+    lines.append(f"  Weight L2:  {pe['weight_l2_delta']:.6f}")
+
+    lines.append("\nDone.")
+    return "\n".join(lines)
+
+
+def main(argv=None):
+    import argparse
+    import json
+    import os
+
+    parser = argparse.ArgumentParser(
+        prog="ai3-data-exfil",
+        description="ML-based data exfiltration research: LSB/index steganography, "
+                    "covert prediction/timing channels, model watermarking. "
+                    "Offline, self-contained.")
+    parser.add_argument("--seed", type=int, default=0, help="RNG seed")
+    parser.add_argument("--rows", type=int, default=100,
+                        help="weight matrix rows")
+    parser.add_argument("--cols", type=int, default=100,
+                        help="weight matrix columns")
+    parser.add_argument("--output", metavar="FILE",
+                        help="write JSON report to FILE (e.g. reports/ai3-report.json)")
+    parser.add_argument("--quiet", action="store_true",
+                        help="suppress human-readable output")
+    args = parser.parse_args(argv)
+
+    results = run_experiment(seed=args.seed, weight_rows=args.rows,
+                             weight_cols=args.cols)
+
+    if args.output:
+        out_dir = os.path.dirname(os.path.abspath(args.output))
+        os.makedirs(out_dir, exist_ok=True)
+        with open(args.output, "w", encoding="utf-8") as fh:
+            json.dump(results, fh, indent=2)
+    if not args.quiet:
+        print(format_report(results))
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
